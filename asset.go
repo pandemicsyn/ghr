@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,10 @@ import (
 const (
 	// AssetIDNotFound is default value of `Asset.ID`.
 	AssetIDNotFound int = 0
+)
+
+var (
+	ErrTransientFailure = errors.New("Transient Github/S3 Failure")
 )
 
 // Asset is the uploading target object.
@@ -62,6 +67,12 @@ func UploadAssets(assets []*Asset, ghrOpts *GhrOpts, apiOpts *GitHubAPIOpts) (<-
 				// Upload asset.
 				outCh <- fmt.Sprintf("--> Uploading: %15s\n", asset.Name)
 				if err := UploadAsset(asset, apiOpts); err != nil {
+					if err == ErrTransientFailure {
+						outCh <- fmt.Sprintf("upload %s got transient error from github. retrying.", asset.Name)
+						if err := UploadAsset(asset, apiOpts); err != nil {
+							errCh <- fmt.Sprintf("upload %s error: %s", asset.Name, err)
+						}
+					}
 					errCh <- fmt.Sprintf("upload %s error: %s", asset.Name, err)
 				}
 
@@ -99,6 +110,10 @@ func UploadAsset(asset *Asset, apiOpts *GitHubAPIOpts) (err error) {
 	_, res, err := client.Repositories.UploadReleaseAsset(apiOpts.OwnerName, apiOpts.RepoName, apiOpts.ID, opts, file)
 	if err != nil {
 		return err
+	}
+
+	if res.StatusCode == 500 || res.StatusCode == 502 {
+		return ErrTransientFailure
 	}
 
 	err = CheckStatusCreated(res)
